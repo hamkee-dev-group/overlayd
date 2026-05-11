@@ -336,9 +336,13 @@ static int layer_import(store_t *s, int argc, char **argv) {
     }
     char ts[32];
     snprintf(ts, sizeof(ts), "%lld", (long long)time(NULL));
-    meta_set(tmp_meta, "name", name);
-    meta_set(tmp_meta, "created_at", ts);
-    meta_set(tmp_meta, "imported_from", tar_path);
+    if (meta_set(tmp_meta, "name", name) != 0 ||
+        meta_set(tmp_meta, "created_at", ts) != 0 ||
+        meta_set(tmp_meta, "imported_from", tar_path) != 0) {
+        warnx_("write meta: %s", strerror(errno));
+        rm_rf(tmp);
+        return 1;
+    }
     if (rename(tmp, dir) != 0) {
         warnx_("rename: %s", strerror(errno));
         rm_rf(tmp);

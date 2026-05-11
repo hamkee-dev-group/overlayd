@@ -423,6 +423,25 @@ imported_path=$("$BIN" layer path imported)
 diff -r "$base_path" "$imported_path" >/dev/null || fail "tar roundtrip diff"
 ok "export/import contracts are pinned"
 
+step "layer import is atomic when meta writes fail"
+fault_so="$WORK/fault_meta.so"
+cc -O2 -fPIC -shared -o "$fault_so" "$HERE/fault_meta.c" -ldl \
+    || fail "build fault_meta.so"
+: >"$RUN_OUT_FILE"
+: >"$RUN_ERR_FILE"
+set +e
+LD_PRELOAD="$fault_so" "$BIN" layer import "$WORK/base.tar" import_fault \
+    >"$RUN_OUT_FILE" 2>"$RUN_ERR_FILE"
+RUN_RC=$?
+set -e
+check_eq "$RUN_RC" "1" "fault import rc"
+check_file_empty "$RUN_OUT_FILE" "fault import stdout"
+check_file_nonempty "$RUN_ERR_FILE" "fault import stderr"
+[[ ! -e "$WORK/.overlayd/layers/import_fault" ]] || fail "fault import layer published"
+left=$(find ./.overlayd/layers -maxdepth 1 -name ".tmp.import_fault.*" | wc -l)
+check_eq "$left" "0" "no .tmp leftovers for import_fault"
+ok "layer import unwinds tmp when meta writes fail"
+
 step "mount, idempotence, and overlay writes"
 unshare -Urm bash <<'EOF'
 set -euo pipefail
