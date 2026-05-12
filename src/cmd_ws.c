@@ -394,7 +394,7 @@ static int ws_create_common(store_t *s, int argc, char **argv, int require_mount
 
     if (do_mount_flag) {
         if (do_mount(s, name) != 0) {
-            warnx_("(workspace %s created but not mounted)", name);
+            rm_rf(dir);
             return 1;
         }
     }

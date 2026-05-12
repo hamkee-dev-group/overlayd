@@ -484,6 +484,38 @@ test "$("$BIN" ws info J | awk -F= '$1=="mounted"{print $2}')" = "1"
 EOF
 ok "materialize wraps create+mount with a single path output"
 
+step "ws_create_common rolls back workspace dir when mount setup fails"
+run_capture "$BIN" ws create mountfail -l base -m "$WORK/run/mountfail"
+[[ "$RUN_RC" -ne 0 ]] || fail "ws create mountfail rc"
+check_file_empty "$RUN_OUT_FILE" "ws create mountfail stdout"
+check_file_nonempty "$RUN_ERR_FILE" "ws create mountfail stderr"
+[[ ! -e ./.overlayd/workspaces/mountfail ]] || fail "mountfail workspace dir leftover"
+
+comma_root="$WORK/store,with,comma"
+mkdir -p "$comma_root"
+"$BIN" --root "$comma_root" init >/dev/null
+"$BIN" --root "$comma_root" layer create base >/dev/null
+mkdir -p "$WORK/run/comma-root"
+run_capture "$BIN" --root "$comma_root" ws create bad -l base -m "$WORK/run/comma-root"
+check_eq "$RUN_RC" "1" "ws create bad (comma store) rc"
+check_file_empty "$RUN_OUT_FILE" "ws create bad (comma store) stdout"
+check_file_nonempty "$RUN_ERR_FILE" "ws create bad (comma store) stderr"
+[[ ! -e "$comma_root/workspaces/bad" ]] || fail "comma store ws bad leftover"
+left=$(find "$comma_root/workspaces" -mindepth 1 -maxdepth 1 | wc -l)
+check_eq "$left" "0" "no leftovers in comma store workspaces"
+
+colon_root="$WORK/store:with:colon"
+mkdir -p "$colon_root"
+"$BIN" --root "$colon_root" init >/dev/null
+"$BIN" --root "$colon_root" layer create base >/dev/null
+run_capture "$BIN" --root "$colon_root" materialize badmat -l base -m "$colon_root/run/root"
+check_eq "$RUN_RC" "1" "materialize badmat (colon store) rc"
+check_file_empty "$RUN_OUT_FILE" "materialize badmat (colon store) stdout"
+check_file_nonempty "$RUN_ERR_FILE" "materialize badmat (colon store) stderr"
+check_file_contains "$RUN_ERR_FILE" "contains unsafe" "materialize badmat (colon store) stderr"
+[[ ! -e "$colon_root/workspaces/badmat" ]] || fail "colon store ws badmat leftover"
+ok "failed mount setup leaves no workspace behind"
+
 step "commit workspace upper into a new layer"
 assert_success_line "v2" "layer commit dev v2" "$BIN" layer commit dev v2
 assert_failure_contract 1 "layer commit duplicate target" "$BIN" layer commit dev v2
