@@ -516,6 +516,22 @@ check_file_contains "$RUN_ERR_FILE" "contains unsafe" "materialize badmat (colon
 [[ ! -e "$colon_root/workspaces/badmat" ]] || fail "colon store ws badmat leftover"
 ok "failed mount setup leaves no workspace behind"
 
+step "layer commit is atomic when meta writes fail"
+: >"$RUN_OUT_FILE"
+: >"$RUN_ERR_FILE"
+set +e
+LD_PRELOAD="$fault_so" "$BIN" layer commit dev commit_fault \
+    >"$RUN_OUT_FILE" 2>"$RUN_ERR_FILE"
+RUN_RC=$?
+set -e
+check_eq "$RUN_RC" "1" "fault commit rc"
+check_file_empty "$RUN_OUT_FILE" "fault commit stdout"
+check_file_nonempty "$RUN_ERR_FILE" "fault commit stderr"
+[[ ! -e "$WORK/.overlayd/layers/commit_fault" ]] || fail "fault commit layer published"
+left=$(find ./.overlayd/layers -maxdepth 1 -name ".tmp.commit_fault.*" | wc -l)
+check_eq "$left" "0" "no .tmp leftovers for commit_fault"
+ok "layer commit unwinds tmp when meta writes fail"
+
 step "commit workspace upper into a new layer"
 assert_success_line "v2" "layer commit dev v2" "$BIN" layer commit dev v2
 assert_failure_contract 1 "layer commit duplicate target" "$BIN" layer commit dev v2

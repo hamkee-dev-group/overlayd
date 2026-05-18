@@ -287,10 +287,14 @@ static int layer_commit(store_t *s, int argc, char **argv) {
     snprintf(ts, sizeof(ts), "%lld", (long long)time(NULL));
     char lowers[8192] = "";
     meta_get(ws_meta, "lowers", lowers, sizeof(lowers));
-    meta_set(tmp_meta, "name", new_name);
-    meta_set(tmp_meta, "created_at", ts);
-    meta_set(tmp_meta, "from_ws", ws_name);
-    if (lowers[0]) meta_set(tmp_meta, "parents", lowers);
+    if (meta_set(tmp_meta, "name", new_name) != 0 ||
+        meta_set(tmp_meta, "created_at", ts) != 0 ||
+        meta_set(tmp_meta, "from_ws", ws_name) != 0 ||
+        (lowers[0] && meta_set(tmp_meta, "parents", lowers) != 0)) {
+        warnx_("write meta: %s", strerror(errno));
+        rm_rf(tmp);
+        return 1;
+    }
     if (rename(tmp, dir) != 0) {
         warnx_("rename: %s", strerror(errno));
         rm_rf(tmp);
