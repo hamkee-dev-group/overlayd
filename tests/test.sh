@@ -376,6 +376,40 @@ step "layer rm refused while in use"
 assert_failure_contract 1 "layer rm in use" "$BIN" layer rm base
 ok "in-use protection works"
 
+step "layer rm fails closed when workspace meta cannot prove non-use"
+assert_layer_rm_blocked() {
+    local label="$1"
+    local layer="$2"
+    local ws="$3"
+    run_capture "$BIN" layer rm "$layer"
+    check_eq "$RUN_RC" "1" "$label rc"
+    check_file_empty "$RUN_OUT_FILE" "$label stdout"
+    check_file_nonempty "$RUN_ERR_FILE" "$label stderr"
+    [[ -d "./.overlayd/layers/$layer" ]] || fail "$label layer removed"
+    [[ -d "./.overlayd/workspaces/$ws" ]] || fail "$label workspace removed"
+    local left
+    left=$(find ./.overlayd/layers ./.overlayd/workspaces -maxdepth 1 -name ".tmp.*" | wc -l)
+    check_eq "$left" "0" "$label no .tmp leftovers"
+}
+
+"$BIN" layer create rm_meta_base >/dev/null
+"$BIN" ws create rm_meta_dev -l rm_meta_base --no-mount -m "$WORK/run/rm_meta-root" >/dev/null
+
+rm -f ./.overlayd/workspaces/rm_meta_dev/meta
+mkdir ./.overlayd/workspaces/rm_meta_dev/meta
+assert_layer_rm_blocked "layer rm with meta=dir" rm_meta_base rm_meta_dev
+rmdir ./.overlayd/workspaces/rm_meta_dev/meta
+
+assert_layer_rm_blocked "layer rm with meta missing" rm_meta_base rm_meta_dev
+
+printf 'name=rm_meta_dev\nmounted=0\n' >./.overlayd/workspaces/rm_meta_dev/meta
+assert_layer_rm_blocked "layer rm with meta missing lowers" rm_meta_base rm_meta_dev
+
+printf 'name=rm_meta_dev\nmounted=0\nlowers=rm_meta_base\n' >./.overlayd/workspaces/rm_meta_dev/meta
+"$BIN" ws rm rm_meta_dev >/dev/null
+"$BIN" layer rm rm_meta_base >/dev/null
+ok "layer rm refuses to delete when workspace meta cannot be parsed"
+
 step "layer info / ws info"
 out=$("$BIN" layer info base)
 [[ "$out" == *"name=base"* ]] || fail "layer info missing name"

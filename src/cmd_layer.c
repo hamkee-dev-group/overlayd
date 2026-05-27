@@ -195,20 +195,27 @@ static int layer_rm(store_t *s, int argc, char **argv) {
         while ((de = readdir(d))) {
             if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
             char meta[4096];
-            if (store_ws_meta(s, de->d_name, meta, sizeof(meta)) != 0) continue;
+            if (store_ws_meta(s, de->d_name, meta, sizeof(meta)) != 0) {
+                warnx_("workspace %s: meta path: %s", de->d_name, strerror(errno));
+                closedir(d);
+                return 1;
+            }
             char lowers[8192];
-            if (meta_get(meta, "lowers", lowers, sizeof(lowers)) == 0) {
-                char *p = lowers;
-                while (p && *p) {
-                    char *next = strchr(p, ',');
-                    if (next) *next = 0;
-                    if (!strcmp(p, name)) {
-                        warnx_("layer %s in use by workspace %s", name, de->d_name);
-                        closedir(d);
-                        return 1;
-                    }
-                    p = next ? next + 1 : NULL;
+            if (meta_get(meta, "lowers", lowers, sizeof(lowers)) != 0) {
+                warnx_("workspace %s: read meta: %s", de->d_name, strerror(errno));
+                closedir(d);
+                return 1;
+            }
+            char *p = lowers;
+            while (p && *p) {
+                char *next = strchr(p, ',');
+                if (next) *next = 0;
+                if (!strcmp(p, name)) {
+                    warnx_("layer %s in use by workspace %s", name, de->d_name);
+                    closedir(d);
+                    return 1;
                 }
+                p = next ? next + 1 : NULL;
             }
         }
         closedir(d);
