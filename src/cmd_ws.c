@@ -360,10 +360,14 @@ static int ws_create_common(store_t *s, int argc, char **argv, int require_mount
 
     char ts[32];
     snprintf(ts, sizeof(ts), "%lld", (long long)time(NULL));
-    meta_set(meta, "name", name);
-    meta_set(meta, "created_at", ts);
-    meta_set(meta, "lowers", joined);
-    meta_set(meta, "mounted", "0");
+    if (meta_set(meta, "name", name) != 0 ||
+        meta_set(meta, "created_at", ts) != 0 ||
+        meta_set(meta, "lowers", joined) != 0 ||
+        meta_set(meta, "mounted", "0") != 0) {
+        warnx_("write meta: %s", strerror(errno));
+        rm_rf(dir);
+        return 1;
+    }
 
     char abs_mp[4096];
     if (mountpoint_arg) {
@@ -377,7 +381,11 @@ static int ws_create_common(store_t *s, int argc, char **argv, int require_mount
             rm_rf(dir);
             return 1;
         }
-        meta_set(meta, "mountpoint", abs_mp);
+        if (meta_set(meta, "mountpoint", abs_mp) != 0) {
+            warnx_("write meta: %s", strerror(errno));
+            rm_rf(dir);
+            return 1;
+        }
     } else {
         if (mkdir_p(merged, 0755) != 0) {
             warnx_("mkdir %s: %s", merged, strerror(errno));
@@ -389,7 +397,11 @@ static int ws_create_common(store_t *s, int argc, char **argv, int require_mount
             rm_rf(dir);
             return 1;
         }
-        meta_set(meta, "mountpoint", abs_mp);
+        if (meta_set(meta, "mountpoint", abs_mp) != 0) {
+            warnx_("write meta: %s", strerror(errno));
+            rm_rf(dir);
+            return 1;
+        }
     }
 
     if (do_mount_flag) {
