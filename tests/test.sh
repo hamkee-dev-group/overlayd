@@ -592,6 +592,15 @@ v2_path=$("$BIN" layer path v2)
 [[ -c "$v2_path/hello.txt" ]] || fail "v2 missing whiteout"
 ok "commit preserves upper contents and stdout contract"
 
+step "layer export rewrites overlay whiteouts as Docker .wh.* entries"
+assert_success_silent "layer export v2" "$BIN" layer export v2 "$WORK/v2.tar"
+v2_listing=$(tar -tvf "$WORK/v2.tar")
+grep -Fq ".wh.hello.txt" <<<"$v2_listing" || fail "v2.tar missing .wh.hello.txt"
+if grep -E '^c.* hello\.txt$' <<<"$v2_listing" >/dev/null; then
+    fail "v2.tar still has char-device hello.txt entry"
+fi
+ok "exported v2.tar uses Docker whiteout convention"
+
 step "stack committed layer back over base"
 assert_success_line "$(realpath -m "$WORK/run/verify-root")" "ws create verify" \
     "$BIN" ws create verify -l v2 -l base --no-mount -m "$WORK/run/verify-root"
@@ -708,6 +717,14 @@ wh_path=$("$BIN" layer path wh)
 [[ "$(stat -c '%t %T' "$wh_path/gone.txt")" == "0 0" ]] || fail "gone.txt not 0/0"
 ok ".wh.* markers become overlay char-dev whiteouts"
 
+step "overlay whiteouts round-trip through export/import"
+assert_success_silent "layer export wh roundtrip" "$BIN" layer export wh "$WORK/wh-round.tar"
+assert_success_line "wh2" "layer import wh-round" "$BIN" layer import "$WORK/wh-round.tar" wh2
+wh2_path=$("$BIN" layer path wh2)
+[[ -c "$wh2_path/gone.txt" ]] || fail "wh2 gone.txt not a char device"
+[[ "$(stat -c '%t %T' "$wh2_path/gone.txt")" == "0 0" ]] || fail "wh2 gone.txt not 0/0"
+ok "overlay whiteouts survive export/import roundtrip"
+
 step "documentation guard"
 [[ -f "$ROOT/README.md" ]] || fail "README.md missing"
 grep -Fq "sandbox --prepare-only" "$ROOT/README.md" || fail "README missing sandbox --prepare-only"
@@ -729,6 +746,7 @@ assert_success_silent "layer rm patch" "$BIN" layer rm patch
 assert_success_silent "layer rm imported" "$BIN" layer rm imported
 assert_success_silent "layer rm v2" "$BIN" layer rm v2
 assert_success_silent "layer rm wh" "$BIN" layer rm wh
+assert_success_silent "layer rm wh2" "$BIN" layer rm wh2
 assert_success_silent "layer rm base" "$BIN" layer rm base
 list=$("$BIN" layer list | wc -l)
 check_eq "$list" "0" "layer list count"

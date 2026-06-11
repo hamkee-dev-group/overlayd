@@ -186,7 +186,20 @@ static int emit_entry(int fd, const char *root, const char *rel, const struct st
     tar_hdr_t h;
     memset(&h, 0, sizeof(h));
     char name[4096];
-    if (S_ISDIR(st->st_mode)) {
+    int whiteout = S_ISCHR(st->st_mode) && major(st->st_rdev) == 0 && minor(st->st_rdev) == 0;
+    if (whiteout) {
+        const char *slash = strrchr(rel, '/');
+        int wr;
+        if (slash)
+            wr = snprintf(name, sizeof(name), "%.*s/.wh.%s",
+                          (int)(slash - rel), rel, slash + 1);
+        else
+            wr = snprintf(name, sizeof(name), ".wh.%s", rel);
+        if (wr < 0 || (size_t)wr >= sizeof(name)) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+    } else if (S_ISDIR(st->st_mode)) {
         if (snprintf(name, sizeof(name), "%s/", rel) >= (int)sizeof(name)) {
             errno = ENAMETOOLONG;
             return -1;
@@ -211,7 +224,12 @@ static int emit_entry(int fd, const char *root, const char *rel, const struct st
         return -1;
     }
 
-    if (S_ISREG(st->st_mode)) {
+    if (whiteout) {
+        h.typeflag = '0';
+        put_octal(h.size, 12, 0);
+        compute_chksum(&h);
+        if (write_all(fd, &h, TAR_BLOCK) != 0) return -1;
+    } else if (S_ISREG(st->st_mode)) {
         h.typeflag = '0';
         put_octal(h.size, 12, (uint64_t)st->st_size);
         compute_chksum(&h);
