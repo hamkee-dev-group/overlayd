@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 #define TAR_BLOCK 512
@@ -386,6 +387,15 @@ static int tar_read_payload(int fd, uint64_t sz, char **buf_out) {
     return 0;
 }
 
+static int tar_skip_payload(int fd, uint64_t sz) {
+    uint64_t blocks = (sz + TAR_BLOCK - 1) / TAR_BLOCK;
+    for (uint64_t b = 0; b < blocks; b++) {
+        char blk[TAR_BLOCK];
+        if (read_all(fd, blk, TAR_BLOCK) != 0) return -1;
+    }
+    return 0;
+}
+
 static int tar_safe_member_path(const char *name) {
     if (!name || !*name || name[0] == '/') return -1;
     const char *p = name;
@@ -744,6 +754,20 @@ int tar_extract(const char *tar_path, const char *dst_dir) {
                 rc = -1;
                 goto done;
             }
+            if (!strcmp(leaf, ".wh..wh..opq")) {
+                if (fsetxattr(dirfd, "trusted.overlay.opaque", "y", 1, 0) != 0) {
+                    warnx_("set opaque xattr %s: %s", name, strerror(errno));
+                    close(dirfd);
+                    rc = -1;
+                    goto done;
+                }
+                close(dirfd);
+                if (tar_skip_payload(fd, sz) != 0) {
+                    rc = -1;
+                    goto done;
+                }
+                continue;
+            }
             if (!strncmp(leaf, ".wh.", 4) && strncmp(leaf + 4, ".wh.", 4) != 0) {
                 memmove(leaf, leaf + 4, strlen(leaf + 4) + 1);
                 if (unlink_nondir_at(dirfd, leaf) != 0 && errno != ENOENT) {
@@ -759,13 +783,9 @@ int tar_extract(const char *tar_path, const char *dst_dir) {
                     goto done;
                 }
                 close(dirfd);
-                uint64_t blocks = (sz + TAR_BLOCK - 1) / TAR_BLOCK;
-                for (uint64_t b = 0; b < blocks; b++) {
-                    char blk[TAR_BLOCK];
-                    if (read_all(fd, blk, TAR_BLOCK) != 0) {
-                        rc = -1;
-                        goto done;
-                    }
+                if (tar_skip_payload(fd, sz) != 0) {
+                    rc = -1;
+                    goto done;
                 }
                 continue;
             }

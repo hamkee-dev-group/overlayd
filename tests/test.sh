@@ -137,6 +137,8 @@ elif kind == "bad_magic":
 elif kind == "whiteout":
     keep_name, keep_payload, wh_name = args
     fmt = tarfile.USTAR_FORMAT
+elif kind == "opaque_whiteout":
+    fmt = tarfile.USTAR_FORMAT
 elif kind == "raw_longlink_huge":
     hdr = bytearray(512)
     name = b"././@LongLink"
@@ -212,6 +214,22 @@ with tarfile.open(tar_path, "w", format=fmt, dereference=False) as tf:
         ti.size = 0
         ti.mode = 0o644
         tf.addfile(ti)
+    elif kind == "opaque_whiteout":
+        ti = tarfile.TarInfo("dir")
+        ti.type = tarfile.DIRTYPE
+        ti.mode = 0o755
+        tf.addfile(ti)
+
+        ti = tarfile.TarInfo("dir/visible.txt")
+        data = b"upper-visible"
+        ti.size = len(data)
+        ti.mode = 0o644
+        tf.addfile(ti, io.BytesIO(data))
+
+        ti = tarfile.TarInfo("dir/.wh..wh..opq")
+        ti.size = 0
+        ti.mode = 0o644
+        tf.addfile(ti)
 
 if kind == "raw_corrupt":
     with open(tar_path, "r+b") as f:
@@ -240,6 +258,20 @@ assert_import_rejected() {
     for outside in "$@"; do
         [[ ! -e "$outside" ]] || fail "unsafe import wrote $outside"
     done
+}
+
+supports_trusted_overlay_xattr() {
+    local probe="$WORK/xattr-probe"
+    rm -rf "$probe"
+    mkdir -p "$probe"
+    python3 - "$probe" >/dev/null 2>&1 <<'PY'
+import os
+import sys
+os.setxattr(sys.argv[1], "trusted.overlay.opaque", b"y")
+PY
+    local rc=$?
+    rm -rf "$probe"
+    return "$rc"
 }
 
 step "init"
@@ -470,6 +502,9 @@ step "layer import is atomic when meta writes fail"
 fault_so="$WORK/fault_meta.so"
 cc -O2 -fPIC -shared -o "$fault_so" "$HERE/fault_meta.c" -ldl \
     || fail "build fault_meta.so"
+fault_xattr_so="$WORK/fault_xattr.so"
+cc -O2 -fPIC -shared -o "$fault_xattr_so" "$HERE/fault_xattr.c" -ldl \
+    || fail "build fault_xattr.so"
 : >"$RUN_OUT_FILE"
 : >"$RUN_ERR_FILE"
 set +e
@@ -716,6 +751,54 @@ wh_path=$("$BIN" layer path wh)
 [[ "$(stat -c '%F' "$wh_path/gone.txt")" == "character special file" ]] || fail "gone.txt %F"
 [[ "$(stat -c '%t %T' "$wh_path/gone.txt")" == "0 0" ]] || fail "gone.txt not 0/0"
 ok ".wh.* markers become overlay char-dev whiteouts"
+
+step "import converts docker opaque markers to overlay opaque directories"
+make_tar_fixture opaque_whiteout "$WORK/opq.tar"
+if supports_trusted_overlay_xattr; then
+    assert_success_line "opq_lower" "layer create opq_lower" "$BIN" layer create opq_lower
+    opq_lower_path=$("$BIN" layer path opq_lower)
+    mkdir -p "$opq_lower_path/dir"
+    echo "lower-hidden" >"$opq_lower_path/dir/hidden.txt"
+    echo "lower-top" >"$opq_lower_path/top.txt"
+    assert_success_line "opq" "layer import opq" "$BIN" layer import "$WORK/opq.tar" opq
+    opq_path=$("$BIN" layer path opq)
+    [[ -f "$opq_path/dir/visible.txt" ]] || fail "opq visible.txt missing"
+    [[ "$(cat "$opq_path/dir/visible.txt")" == "upper-visible" ]] || fail "opq visible.txt content"
+    [[ ! -e "$opq_path/dir/.wh..wh..opq" ]] || fail ".wh..wh..opq left in layer content"
+    opq_mp="$(realpath -m "$WORK/run/opq-root")"
+    export opq_mp
+    assert_success_line "$opq_mp" "ws create opqws" \
+        "$BIN" ws create opqws -l opq -l opq_lower --no-mount -m "$WORK/run/opq-root"
+    unshare -Urm bash <<'EOF'
+set -euo pipefail
+cd "$WORK"
+"$BIN" ws mount opqws
+test ! -e "$opq_mp/dir/hidden.txt"
+test "$(cat "$opq_mp/dir/visible.txt")" = "upper-visible"
+test "$(cat "$opq_mp/top.txt")" = "lower-top"
+"$BIN" ws unmount opqws
+EOF
+    ok ".wh..wh..opq markers become overlay opaque directories"
+else
+    assert_import_rejected "$WORK/opq.tar" opq_unavailable
+    ok ".wh..wh..opq mount semantics skipped: trusted.overlay.opaque unavailable"
+fi
+
+step "opaque xattr failures abort layer import"
+: >"$RUN_OUT_FILE"
+: >"$RUN_ERR_FILE"
+set +e
+LD_PRELOAD="$fault_xattr_so" "$BIN" layer import "$WORK/opq.tar" opq_fault \
+    >"$RUN_OUT_FILE" 2>"$RUN_ERR_FILE"
+RUN_RC=$?
+set -e
+check_eq "$RUN_RC" "1" "fault opaque import rc"
+check_file_empty "$RUN_OUT_FILE" "fault opaque import stdout"
+check_file_nonempty "$RUN_ERR_FILE" "fault opaque import stderr"
+[[ ! -e "$WORK/.overlayd/layers/opq_fault" ]] || fail "fault opaque layer published"
+left=$(find ./.overlayd/layers -maxdepth 1 -name ".tmp.opq_fault.*" | wc -l)
+check_eq "$left" "0" "no .tmp leftovers for opq_fault"
+ok "opaque xattr setup fails closed"
 
 step "overlay whiteouts round-trip through export/import"
 assert_success_silent "layer export wh roundtrip" "$BIN" layer export wh "$WORK/wh-round.tar"
