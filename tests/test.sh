@@ -139,6 +139,8 @@ elif kind == "whiteout":
     fmt = tarfile.USTAR_FORMAT
 elif kind == "opaque_whiteout":
     fmt = tarfile.USTAR_FORMAT
+elif kind == "mode_dir_child":
+    fmt = tarfile.USTAR_FORMAT
 elif kind == "raw_longlink_huge":
     hdr = bytearray(512)
     name = b"././@LongLink"
@@ -230,6 +232,17 @@ with tarfile.open(tar_path, "w", format=fmt, dereference=False) as tf:
         ti.size = 0
         ti.mode = 0o644
         tf.addfile(ti)
+    elif kind == "mode_dir_child":
+        ti = tarfile.TarInfo("readonly")
+        ti.type = tarfile.DIRTYPE
+        ti.mode = 0o555
+        tf.addfile(ti)
+
+        ti = tarfile.TarInfo("readonly/child.txt")
+        data = b"mode payload"
+        ti.size = len(data)
+        ti.mode = 0o644
+        tf.addfile(ti, io.BytesIO(data))
 
 if kind == "raw_corrupt":
     with open(tar_path, "r+b") as f:
@@ -497,6 +510,18 @@ assert_failure_contract 1 "layer import duplicate" "$BIN" layer import "$WORK/ba
 imported_path=$("$BIN" layer path imported)
 diff -r "$base_path" "$imported_path" >/dev/null || fail "tar roundtrip diff"
 ok "export/import contracts are pinned"
+
+step "layer import preserves modes after extracting directory children"
+make_tar_fixture mode_dir_child "$WORK/modes.tar"
+assert_success_line "modes" "layer import modes" \
+    bash -c 'umask 0077; exec "$1" layer import "$2" modes' _ "$BIN" "$WORK/modes.tar"
+modes_path=$("$BIN" layer path modes)
+check_file_exact "$modes_path/readonly/child.txt" "mode payload" "mode child payload"
+check_eq "$(stat -c '%a' "$modes_path/readonly")" "555" "imported directory mode"
+check_eq "$(stat -c '%a' "$modes_path/readonly/child.txt")" "644" "imported file mode"
+chmod u+w "$modes_path/readonly"
+assert_success_silent "layer rm modes" "$BIN" layer rm modes
+ok "imported file and deferred directory modes are exact"
 
 step "layer import is atomic when meta writes fail"
 fault_so="$WORK/fault_meta.so"

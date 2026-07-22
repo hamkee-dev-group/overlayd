@@ -517,11 +517,11 @@ static int open_parent_dir_at(int rootfd, const char *name, char *leaf, size_t l
     return -1;
 }
 
-static int ensure_dir_at(int rootfd, const char *name, mode_t mode) {
+static int ensure_dir_at(int rootfd, const char *name) {
     char leaf[256];
     int dirfd = open_parent_dir_at(rootfd, name, leaf, sizeof(leaf));
     if (dirfd < 0) return -1;
-    if (mkdirat(dirfd, leaf, mode & 07777) != 0 && errno != EEXIST) {
+    if (mkdirat(dirfd, leaf, 0700) != 0 && errno != EEXIST) {
         close(dirfd);
         return -1;
     }
@@ -530,8 +530,94 @@ static int ensure_dir_at(int rootfd, const char *name, mode_t mode) {
         close(dirfd);
         return -1;
     }
+    if (fchmod(subfd, 0700) != 0) {
+        int saved_errno = errno;
+        close(subfd);
+        close(dirfd);
+        errno = saved_errno;
+        return -1;
+    }
     close(subfd);
     close(dirfd);
+    return 0;
+}
+
+typedef struct {
+    char *name;
+    mode_t mode;
+    size_t depth;
+} deferred_dir_mode_t;
+
+static int defer_dir_mode(deferred_dir_mode_t **dirs, size_t *count, size_t *capacity,
+                          const char *name, mode_t mode) {
+    for (size_t i = 0; i < *count; i++) {
+        if (!strcmp((*dirs)[i].name, name)) {
+            (*dirs)[i].mode = mode;
+            return 0;
+        }
+    }
+
+    char *copy = strdup(name);
+    if (!copy) return -1;
+    if (*count == *capacity) {
+        if (*capacity > SIZE_MAX / 2) {
+            free(copy);
+            errno = ENOMEM;
+            return -1;
+        }
+        size_t new_capacity = *capacity ? *capacity * 2 : 16;
+        if (new_capacity > SIZE_MAX / sizeof(**dirs)) {
+            free(copy);
+            errno = ENOMEM;
+            return -1;
+        }
+        deferred_dir_mode_t *new_dirs = realloc(*dirs, new_capacity * sizeof(**dirs));
+        if (!new_dirs) {
+            free(copy);
+            return -1;
+        }
+        *dirs = new_dirs;
+        *capacity = new_capacity;
+    }
+
+    size_t depth = 0;
+    for (const char *p = name; *p; p++) {
+        if (*p == '/') depth++;
+    }
+    (*dirs)[*count] = (deferred_dir_mode_t){copy, mode, depth};
+    (*count)++;
+    return 0;
+}
+
+static int compare_dir_depth(const void *a, const void *b) {
+    const deferred_dir_mode_t *da = a;
+    const deferred_dir_mode_t *db = b;
+    if (da->depth < db->depth) return 1;
+    if (da->depth > db->depth) return -1;
+    return 0;
+}
+
+static int apply_deferred_dir_modes(int rootfd, deferred_dir_mode_t *dirs, size_t count) {
+    if (count > 1) qsort(dirs, count, sizeof(*dirs), compare_dir_depth);
+    for (size_t i = 0; i < count; i++) {
+        char leaf[256];
+        int dirfd = open_parent_dir_at(rootfd, dirs[i].name, leaf, sizeof(leaf));
+        if (dirfd < 0) return -1;
+        int subfd = openat(dirfd, leaf, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+        int saved_errno = errno;
+        close(dirfd);
+        if (subfd < 0) {
+            errno = saved_errno;
+            return -1;
+        }
+        if (fchmod(subfd, dirs[i].mode) != 0) {
+            saved_errno = errno;
+            close(subfd);
+            errno = saved_errno;
+            return -1;
+        }
+        close(subfd);
+    }
     return 0;
 }
 
@@ -570,6 +656,9 @@ int tar_extract(const char *tar_path, const char *dst_dir) {
     char *long_link = NULL;
     char *pax_path = NULL;
     char *pax_link = NULL;
+    deferred_dir_mode_t *deferred_dirs = NULL;
+    size_t deferred_dir_count = 0;
+    size_t deferred_dir_capacity = 0;
     int rc = 0;
 
     for (;;) {
@@ -741,8 +830,14 @@ int tar_extract(const char *tar_path, const char *dst_dir) {
         pax_link = NULL;
 
         if (tf == '5') {
-            if (ensure_dir_at(rootfd, name, (mode_t)mode) != 0) {
+            if (ensure_dir_at(rootfd, name) != 0) {
                 warnx_("mkdir %s: %s", name, strerror(errno));
+                rc = -1;
+                goto done;
+            }
+            if (defer_dir_mode(&deferred_dirs, &deferred_dir_count,
+                               &deferred_dir_capacity, name, (mode_t)(mode & 07777)) != 0) {
+                warnx_("record directory mode %s: %s", name, strerror(errno));
                 rc = -1;
                 goto done;
             }
@@ -814,6 +909,12 @@ int tar_extract(const char *tar_path, const char *dst_dir) {
                 }
                 remaining -= take;
             }
+            if (fchmod(wfd, (mode_t)(mode & 07777)) != 0) {
+                warnx_("chmod %s: %s", name, strerror(errno));
+                close(wfd);
+                rc = -1;
+                goto done;
+            }
             close(wfd);
         } else if (tf == '2') {
             char leaf[256];
@@ -876,11 +977,18 @@ int tar_extract(const char *tar_path, const char *dst_dir) {
         }
     }
 
+    if (apply_deferred_dir_modes(rootfd, deferred_dirs, deferred_dir_count) != 0) {
+        warnx_("apply directory modes: %s", strerror(errno));
+        rc = -1;
+    }
+
 done:
     free(long_name);
     free(long_link);
     free(pax_path);
     free(pax_link);
+    for (size_t i = 0; i < deferred_dir_count; i++) free(deferred_dirs[i].name);
+    free(deferred_dirs);
     close(rootfd);
     if (fd != STDIN_FILENO) close(fd);
     return rc;
