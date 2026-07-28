@@ -141,6 +141,11 @@ elif kind == "opaque_whiteout":
     fmt = tarfile.USTAR_FORMAT
 elif kind == "mode_dir_child":
     fmt = tarfile.USTAR_FORMAT
+elif kind == "hardlink":
+    fmt = tarfile.USTAR_FORMAT
+elif kind == "hardlink_escape":
+    (sym_target,) = args
+    fmt = tarfile.USTAR_FORMAT
 elif kind == "raw_longlink_huge":
     hdr = bytearray(512)
     name = b"././@LongLink"
@@ -243,6 +248,27 @@ with tarfile.open(tar_path, "w", format=fmt, dereference=False) as tf:
         ti.size = len(data)
         ti.mode = 0o644
         tf.addfile(ti, io.BytesIO(data))
+    elif kind == "hardlink":
+        ti = tarfile.TarInfo("bin/tool")
+        data = b"tool payload"
+        ti.size = len(data)
+        ti.mode = 0o755
+        tf.addfile(ti, io.BytesIO(data))
+
+        ti = tarfile.TarInfo("bin/tool-hard")
+        ti.type = tarfile.LNKTYPE
+        ti.linkname = "bin/tool"
+        tf.addfile(ti)
+    elif kind == "hardlink_escape":
+        ti = tarfile.TarInfo("evil")
+        ti.type = tarfile.SYMTYPE
+        ti.linkname = sym_target
+        tf.addfile(ti)
+
+        ti = tarfile.TarInfo("loot")
+        ti.type = tarfile.LNKTYPE
+        ti.linkname = "evil/secret.txt"
+        tf.addfile(ti)
 
 if kind == "raw_corrupt":
     with open(tar_path, "r+b") as f:
@@ -777,6 +803,25 @@ wh_path=$("$BIN" layer path wh)
 [[ "$(stat -c '%t %T' "$wh_path/gone.txt")" == "0 0" ]] || fail "gone.txt not 0/0"
 ok ".wh.* markers become overlay char-dev whiteouts"
 
+step "import materializes tar hardlink entries as hardlinks"
+make_tar_fixture hardlink "$WORK/hard.tar"
+assert_success_line "hard" "layer import hard" "$BIN" layer import "$WORK/hard.tar" hard
+hard_path=$("$BIN" layer path hard)
+[[ -f "$hard_path/bin/tool" ]] || fail "bin/tool missing"
+[[ -f "$hard_path/bin/tool-hard" ]] || fail "bin/tool-hard missing"
+[[ "$(cat "$hard_path/bin/tool")" == "tool payload" ]] || fail "bin/tool content"
+[[ "$(cat "$hard_path/bin/tool-hard")" == "tool payload" ]] || fail "bin/tool-hard content"
+[[ "$(stat -c '%d:%i' "$hard_path/bin/tool")" == "$(stat -c '%d:%i' "$hard_path/bin/tool-hard")" ]] \
+    || fail "hardlink does not share inode"
+ok "tar hardlink entries share the same inode"
+
+step "import rejects hardlink targets that escape through symlink components"
+mkdir -p "$WORK/hl_secret"
+echo "top secret" >"$WORK/hl_secret/secret.txt"
+make_tar_fixture hardlink_escape "$WORK/hard_escape.tar" "$WORK/hl_secret"
+assert_import_rejected "$WORK/hard_escape.tar" hard_escape
+ok "hardlink resolution cannot traverse symlinks out of the layer"
+
 step "import converts docker opaque markers to overlay opaque directories"
 make_tar_fixture opaque_whiteout "$WORK/opq.tar"
 if supports_trusted_overlay_xattr; then
@@ -855,6 +900,7 @@ assert_success_silent "layer rm imported" "$BIN" layer rm imported
 assert_success_silent "layer rm v2" "$BIN" layer rm v2
 assert_success_silent "layer rm wh" "$BIN" layer rm wh
 assert_success_silent "layer rm wh2" "$BIN" layer rm wh2
+assert_success_silent "layer rm hard" "$BIN" layer rm hard
 assert_success_silent "layer rm base" "$BIN" layer rm base
 list=$("$BIN" layer list | wc -l)
 check_eq "$list" "0" "layer list count"

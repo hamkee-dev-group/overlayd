@@ -937,6 +937,45 @@ int tar_extract(const char *tar_path, const char *dst_dir) {
                 goto done;
             }
             close(dirfd);
+        } else if (tf == '1') {
+            char target[4096];
+            if (tar_normalize_member_name(linkname, target, sizeof(target)) != 0) {
+                warnx_("unsafe tar hardlink target: %s", linkname);
+                rc = -1;
+                goto done;
+            }
+            char target_leaf[256];
+            int target_dirfd =
+                open_parent_dir_at(rootfd, target, target_leaf, sizeof(target_leaf));
+            if (target_dirfd < 0) {
+                warnx_("open hardlink target %s: %s", target, strerror(errno));
+                rc = -1;
+                goto done;
+            }
+            char leaf[256];
+            int dirfd = open_parent_dir_at(rootfd, name, leaf, sizeof(leaf));
+            if (dirfd < 0) {
+                warnx_("open parent %s: %s", name, strerror(errno));
+                close(target_dirfd);
+                rc = -1;
+                goto done;
+            }
+            if (unlink_nondir_at(dirfd, leaf) != 0 && errno != ENOENT) {
+                warnx_("unlink %s: %s", name, strerror(errno));
+                close(dirfd);
+                close(target_dirfd);
+                rc = -1;
+                goto done;
+            }
+            if (linkat(target_dirfd, target_leaf, dirfd, leaf, 0) != 0) {
+                warnx_("hardlink %s -> %s: %s", name, target, strerror(errno));
+                close(dirfd);
+                close(target_dirfd);
+                rc = -1;
+                goto done;
+            }
+            close(dirfd);
+            close(target_dirfd);
         } else if (tf == '3' || tf == '4' || tf == '6') {
             uint64_t maj = get_octal(h.devmajor, 8);
             uint64_t min = get_octal(h.devminor, 8);
