@@ -34,11 +34,23 @@ int store_init(const char *root) {
         return -1;
     }
     if (mkdir_p(root, 0755) != 0) return -1;
+    if (!is_dir(root)) {
+        errno = ENOTDIR;
+        return -1;
+    }
     char p[4096];
     if (snprintf(p, sizeof(p), "%s/layers", root) >= (int)sizeof(p)) return -1;
     if (mkdir_p(p, 0755) != 0) return -1;
+    if (!is_dir(p)) {
+        errno = ENOTDIR;
+        return -1;
+    }
     if (snprintf(p, sizeof(p), "%s/workspaces", root) >= (int)sizeof(p)) return -1;
     if (mkdir_p(p, 0755) != 0) return -1;
+    if (!is_dir(p)) {
+        errno = ENOTDIR;
+        return -1;
+    }
     if (snprintf(p, sizeof(p), "%s/version", root) >= (int)sizeof(p)) return -1;
     const char *v = "1\n";
     if (write_file(p, v, strlen(v)) != 0) return -1;
@@ -58,6 +70,17 @@ int store_open(store_t *s, const char *root_or_null) {
     }
     if (populate_paths(s) != 0) return -1;
     if (!is_dir(s->root) || !is_dir(s->layers_dir) || !is_dir(s->ws_dir)) {
+        errno = ENOENT;
+        return -1;
+    }
+    char version[4096];
+    if (snprintf(version, sizeof(version), "%s/version", s->root) >=
+        (int)sizeof(version)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    struct stat vst;
+    if (stat(version, &vst) != 0 || !S_ISREG(vst.st_mode)) {
         errno = ENOENT;
         return -1;
     }

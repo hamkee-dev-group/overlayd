@@ -221,8 +221,17 @@ static int layer_rm(store_t *s, int argc, char **argv) {
         closedir(d);
     }
 
-    if (rm_rf(dir) != 0) {
-        warnx_("rm -rf %s: %s", dir, strerror(errno));
+    char tmp[4096];
+    if (build_tmp_path(s, name, tmp, sizeof(tmp)) != 0) {
+        warnx_("layer %s: %s", name, strerror(errno));
+        return 1;
+    }
+    if (rename(dir, tmp) != 0) {
+        warnx_("rename %s -> %s: %s", dir, tmp, strerror(errno));
+        return 1;
+    }
+    if (rm_rf(tmp) != 0) {
+        warnx_("rm -rf %s: %s", tmp, strerror(errno));
         return 1;
     }
     return 0;
