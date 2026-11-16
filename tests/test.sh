@@ -736,6 +736,76 @@ exec 9<&-
 EOF
 ok "force remove stops when unmount leaves the workspace live"
 
+step "foreign mounts are never adopted or unmounted"
+foreign_mp="$(realpath -m "$WORK/run/foreign-root")"
+export foreign_mp
+unshare -Urm bash <<'EOF'
+set -euo pipefail
+cd "$WORK"
+refused() {
+    local rc=0
+    "$@" >"$WORK/foreign.out" 2>"$WORK/foreign.err" || rc=$?
+    test "$rc" = 1
+    test ! -s "$WORK/foreign.out"
+    test -s "$WORK/foreign.err"
+    test -e "$foreign_mp/sentinel"
+}
+ws_state() {
+    "$BIN" ws list | awk -F '\t' -v ws="$1" '$1 == ws { print $2 }'
+}
+mkdir -p "$foreign_mp"
+mount -t tmpfs tmpfs "$foreign_mp"
+touch "$foreign_mp/sentinel"
+
+refused "$BIN" ws create fw -l base -m "$foreign_mp"
+test ! -e ./.overlayd/workspaces/fw
+
+"$BIN" ws create fw -l base --no-mount -m "$foreign_mp" >/dev/null
+sed -i 's/^mounted=0$/mounted=1/' ./.overlayd/workspaces/fw/meta
+test "$(ws_state fw)" = unmounted
+refused "$BIN" ws mount fw
+refused "$BIN" ws unmount fw
+refused "$BIN" ws rm fw
+refused "$BIN" ws rm --force fw
+test -d ./.overlayd/workspaces/fw
+mountpoint -q "$foreign_mp"
+
+umount "$foreign_mp"
+"$BIN" ws mount fw
+touch "$foreign_mp/sentinel"
+refused "$BIN" ws create other -l base -m "$foreign_mp"
+test ! -e ./.overlayd/workspaces/other
+test "$(ws_state fw)" = mounted
+"$BIN" ws rm fw
+test ! -e ./.overlayd/workspaces/fw
+if mountpoint -q "$foreign_mp"; then exit 1; fi
+EOF
+ok "tmpfs and other workspaces' overlays stay untouched"
+
+step "mount ownership is recognized through escaped mountinfo paths"
+space_root="$WORK/store with space"
+space_mp="$(realpath -m "$WORK/run/space root")"
+space_mp_info="${space_mp// /\\040}"
+export space_root space_mp space_mp_info
+"$BIN" --root "$space_root" init >/dev/null
+"$BIN" --root "$space_root" layer create base >/dev/null
+unshare -Urm bash <<'EOF'
+set -euo pipefail
+cd "$WORK"
+count_mounts() {
+    awk '$5 == ENVIRON["space_mp_info"] { n++ } END { print n + 0 }' /proc/self/mountinfo
+}
+"$BIN" --root "$space_root" ws create sp -l base -m "$space_mp" >/dev/null
+test "$(count_mounts)" = 1
+"$BIN" --root "$space_root" ws mount sp
+test "$(count_mounts)" = 1
+"$BIN" --root "$space_root" ws list | awk -F '\t' '$1=="sp"{print $2}' | grep -Fxq mounted
+"$BIN" --root "$space_root" ws rm sp
+test "$(count_mounts)" = 0
+test ! -e "$space_root/workspaces/sp"
+EOF
+ok "octal-escaped mount points and upperdirs still match"
+
 step "silent ws rm for an unmounted workspace"
 assert_success_silent "ws rm aaa" "$BIN" ws rm aaa
 ok "ws rm is silent on success"

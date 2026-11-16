@@ -38,6 +38,10 @@ int meta_get(const char *path, const char *key, char *out, size_t outsz);
 int meta_has(const char *path, const char *key);
 int meta_unset(const char *path, const char *key);
 
-int is_mountpoint(const char *path);
+#define MOUNT_ABSENT  0
+#define MOUNT_OWNED   1
+#define MOUNT_FOREIGN 2
+
+int overlay_mount_state(const char *mountpoint, const char *abs_upper);
 
 #endif

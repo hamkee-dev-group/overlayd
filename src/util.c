@@ -496,12 +496,58 @@ int meta_unset(const char *path, const char *key) {
     return rc;
 }
 
-int is_mountpoint(const char *path) {
-    struct stat st, parent;
-    if (lstat(path, &st) != 0) return 0;
-    char buf[4096];
-    int r = snprintf(buf, sizeof(buf), "%s/..", path);
-    if (r < 0 || (size_t)r >= sizeof(buf)) return 0;
-    if (lstat(buf, &parent) != 0) return 0;
-    return st.st_dev != parent.st_dev;
+static void unescape_octal(char *s) {
+    char *w = s;
+    while (*s) {
+        if (s[0] == '\\' && s[1] >= '0' && s[1] <= '3' &&
+            s[2] >= '0' && s[2] <= '7' && s[3] >= '0' && s[3] <= '7') {
+            *w++ = (char)(((s[1] - '0') << 6) | ((s[2] - '0') << 3) | (s[3] - '0'));
+            s += 4;
+        } else {
+            *w++ = *s++;
+        }
+    }
+    *w = 0;
+}
+
+int overlay_mount_state(const char *mountpoint, const char *abs_upper) {
+    FILE *f = fopen("/proc/self/mountinfo", "r");
+    if (!f) return -1;
+    char *real = realpath(mountpoint, NULL);
+    const char *want = real ? real : mountpoint;
+    int state = MOUNT_ABSENT;
+    char *line = NULL;
+    size_t cap = 0;
+    while (getline(&line, &cap, f) >= 0) {
+        char *mp = line;
+        for (int i = 0; i < 4 && mp; i++) {
+            mp = strchr(mp, ' ');
+            if (mp) mp++;
+        }
+        char *sep = mp ? strstr(mp, " - ") : NULL;
+        if (!sep) continue;
+        *strchr(mp, ' ') = 0;
+        unescape_octal(mp);
+        if (strcmp(mp, want) != 0) continue;
+
+        char *fstype = sep + 3;
+        char *source = strchr(fstype, ' ');
+        char *opts = source ? strchr(source + 1, ' ') : NULL;
+        int owned = 0;
+        if (opts && !strncmp(fstype, "overlay ", 8)) {
+            char *save = NULL;
+            for (char *o = strtok_r(opts + 1, ",\n", &save); o; o = strtok_r(NULL, ",\n", &save)) {
+                if (strncmp(o, "upperdir=", 9) != 0) continue;
+                unescape_octal(o + 9);
+                owned = !strcmp(o + 9, abs_upper);
+            }
+        }
+        /* Mounts stack on one path, so anything there that is not ours makes it foreign. */
+        state = owned && state != MOUNT_FOREIGN ? MOUNT_OWNED : MOUNT_FOREIGN;
+    }
+    if (ferror(f)) state = -1;
+    free(line);
+    fclose(f);
+    free(real);
+    return state;
 }

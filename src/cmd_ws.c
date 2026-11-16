@@ -109,9 +109,18 @@ static int ws_mountpoint(store_t *s, const char *name, char *out, size_t outsz, 
     return -1;
 }
 
+static int ws_mount_state(store_t *s, const char *name, const char *mountpoint) {
+    char upper[4096], abs_upper[4096];
+    if (store_ws_upper(s, name, upper, sizeof(upper)) != 0) return -1;
+    const char *want = resolve_abs(upper, abs_upper, sizeof(abs_upper)) == 0 ? abs_upper : upper;
+    int state = overlay_mount_state(mountpoint, want);
+    if (state < 0) warnx_("read /proc/self/mountinfo: %s", strerror(errno));
+    return state;
+}
+
 static int ws_real_mount_state(store_t *s, const char *name, char *mountpoint, size_t outsz) {
     if (ws_mountpoint(s, name, mountpoint, outsz, 0) != 0) return -1;
-    return is_mountpoint(mountpoint) ? 1 : 0;
+    return ws_mount_state(s, name, mountpoint);
 }
 
 static int build_lower_opt(store_t *s, char **layers, int n, char *out, size_t outsz) {
@@ -173,7 +182,13 @@ static int do_mount(store_t *s, const char *name) {
         }
     }
 
-    if (is_mountpoint(mountpoint)) {
+    int state = ws_mount_state(s, name, mountpoint);
+    if (state < 0) return -1;
+    if (state == MOUNT_FOREIGN) {
+        warnx_("%s is occupied by a mount that does not belong to workspace %s", mountpoint, name);
+        return -1;
+    }
+    if (state == MOUNT_OWNED) {
         if (meta_set(meta, "mounted", "1") != 0 ||
             meta_set(meta, "mountpoint", mountpoint) != 0) {
             warnx_("write meta: %s", strerror(errno));
@@ -239,7 +254,13 @@ static int do_unmount(store_t *s, const char *name) {
     if (ws_mountpoint(s, name, mountpoint, sizeof(mountpoint), 0) != 0) {
         return -1;
     }
-    if (!is_mountpoint(mountpoint)) {
+    int state = ws_mount_state(s, name, mountpoint);
+    if (state < 0) return -1;
+    if (state == MOUNT_FOREIGN) {
+        warnx_("%s is occupied by a mount that does not belong to workspace %s", mountpoint, name);
+        return -1;
+    }
+    if (state == MOUNT_ABSENT) {
         if (meta_set(meta, "mounted", "0") != 0) {
             warnx_("write meta: %s", strerror(errno));
             return -1;
@@ -439,7 +460,7 @@ static int ws_list(store_t *s, int argc, char **argv) {
         meta_get(meta, "mountpoint", mp, sizeof(mp));
         meta_get(meta, "lowers", lowers, sizeof(lowers));
         const char *state = !strcmp(mounted, "1") ? "mounted" : "unmounted";
-        if (mp[0]) state = is_mountpoint(mp) ? "mounted" : "unmounted";
+        if (mp[0]) state = ws_mount_state(s, names[i], mp) == MOUNT_OWNED ? "mounted" : "unmounted";
         printf("%s\t%s\t%s\t%s\n",
                names[i],
                state,
@@ -590,6 +611,10 @@ static int ws_rm(store_t *s, int argc, char **argv) {
     char mountpoint[4096];
     int mounted = ws_real_mount_state(s, name, mountpoint, sizeof(mountpoint));
     if (mounted < 0) return 1;
+    if (mounted == MOUNT_FOREIGN) {
+        warnx_("%s is occupied by a mount that does not belong to workspace %s", mountpoint, name);
+        return 1;
+    }
 
     if (mounted) {
         int unmount_rc = do_unmount(s, name);
